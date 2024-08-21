@@ -376,7 +376,7 @@ updateQueryDT <- function(x,
   x <- as.data.table(x)[,.SD, .SDcols = names(dt)]
   x[, comentario := fcoalesce(as.character(comentario), "")]
   x[, titulo := fcoalesce(as.character(titulo), "")]
-  x[, version := as.POSIXct(version, tz = "UTC")]
+  x[, version := as.POSIXct(version, tz = "Etc/GMT+3")]
 
   stopifnot(!anyDuplicated(x[, .(id, adjuntos_id)]))
   stopifnot(all.equal(names(x), names(dt)))
