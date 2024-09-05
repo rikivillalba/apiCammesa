@@ -1,4 +1,6 @@
-#API CAMMESA
+# API CAMMESA
+# ===========
+# Autor: rikivillalba@gmail.com
 
 #' @import data.table
 NULL
