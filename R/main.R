@@ -4,7 +4,9 @@
 
 #' @import data.table
 NULL
-
+`[.test` = function() {
+  NULL
+}
 # Funciones auxiliares
 parseFecha <- function(fecha, tz = "Etc/GMT+3") {
   if (inherits(fecha, "Date")) {
