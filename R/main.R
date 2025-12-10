@@ -3,7 +3,13 @@
 #' @import data.table
 NULL
 
+
 # Funciones auxiliares
+messagef <- function (fmt, ..., domain = NULL, appendLF = TRUE) {
+  message(sprintf(fmt, ...), domain = domain, appendLF = appendLF)
+}
+
+
 parseFecha <- function(fecha, tz = "Etc/GMT+3") {
   if (inherits(fecha, "Date")) {
     # la API REST de CAMMESA toma fechas UTC con medianoche local,
@@ -108,44 +114,47 @@ api_docs <- function() {
 #'
 #' @examples
 findDocumentosByNemo <- function(
-    nemo = "DTE_EMISION",
-    fechadesde = as.POSIXct(
-      trunc(Sys.time() - 30L * 86400L, "month"), tz = tz),
-    fechahasta = Sys.time(),
-    tz = "America/Buenos_Aires",
-    folder = "~\\..\\OneDrive - Enel Spa\\cammesa\\downloads",
-    download.policy = c("none", "missing.only", "overwrite"),
-    queryByMonth = TRUE, get.config = list())
-{
-
-  stopifnot(is.character(nemo) && length(nemo) == 1)
+  nemo = "DTE_EMISION",
+  fechadesde = as.POSIXct(
+    trunc(Sys.time() - 30L * 86400L, "month"),
+    tz = tz
+  ),
+  fechahasta = Sys.time(),
+  tz = "America/Buenos_Aires",
+  folder = "~\\..\\OneDrive - Enel Spa\\cammesa\\downloads",
+  download.policy = c("none", "missing.only", "overwrite"),
+  queryByMonth = FALSE, get.config = list()
+) {
+  stopifnot(is.character(nemo))
   stopifnot(is.atomic(fechadesde) && length(fechadesde) == 1)
   stopifnot(is.atomic(fechahasta) && length(fechahasta) == 1)
   download.policy <- match.arg(download.policy)
 
   if (queryByMonth) {
     fechas <- splitYM(seq.POSIXt(
-      parseFecha(fechadesde, tz), parseFecha(fechahasta, tz), "days")) |>
-      lapply(range)
-    l <- length(fechas)
-    fd <- as.POSIXct(unlist(lapply(fechas, `[`, 1)))
-    fh <- as.POSIXct(c(unlist(lapply(fechas[-1], `[`, 1)), fechas[[l]][2]))
-    fechas <- Map(f = c, fd, fh) |>
-      lapply(format, "%Y-%m-%dT%H:%M:%OS3Z", tz = "UTC")
+      parseFecha(fechadesde, tz), parseFecha(fechahasta, tz), "days"
+    ))
+    fd <- as.POSIXct(vapply(fechas, head, 0, 1), "UTC")
+    fh <- as.POSIXct(vapply(fechas, tail, 0, 1), "UTC")
   } else {
-    fechas <- list(format(
-      c(parseFecha(fechadesde[1], tz), parseFecha(fechahasta[1], tz)),
-      "%Y-%m-%dT%H:%M:%OS3Z", tz = "UTC"))
+    fd <- parseFecha(fechadesde, tz)
+    fh <- parseFecha(fechahasta, tz)
   }
 
-  responses <- lapply(fechas, function(f) {
-    message(sprintf(
-      "Consultando desde %s hasta %s", f[1], f[2]))
-    url <- httr::parse_url(
-      "https://api.cammesa.com/pub-svc/public/findDocumentosByNemoRango") |>
-      within.list(
-        query <- list(fechadesde = f[1], fechahasta = f[2], nemo = nemo)) |>
-      httr::build_url()
+  tabla <- expand.grid(
+    fechadesde = format(fd, format = "%Y-%m-%dT%H:%M:%OS3Z"),
+    fechahasta = format(fh, format = "%Y-%m-%dT%H:%M:%OS3Z"),
+    nemo = nemo
+  )
+  responses <- lapply(split(tabla, seq(NROW(tabla))), function(tbl) {
+    fd <- tbl$fechadesde
+    fh <- tbl$fechahasta
+    messagef("Consultando desde %s hasta %s", fd, fh)
+    url <- httr::modify_url(
+      "https://api.cammesa.com/",
+      path = "pub-svc/public/findDocumentosByNemoRango",
+      query = list(fechadesde = fd, fechahasta = fh, nemo = tbl$nemo)
+    )
     message("request ", utils::URLdecode(url))
     httr::stop_for_status(resp <- httr::GET(url))
     resp
@@ -155,34 +164,44 @@ findDocumentosByNemo <- function(
   saveRDS(responses, tmpfile)
   on.exit(message(gettextf("datos descargados guardados en %s", tmpfile)))
 
-  if (download.policy != "none") {
-    # simplifyVector = F no procesa las tablas (puro json mas facil)
-    resp_tables <- lapply(responses, httr::content, simplifyVector = F)
-
-    for (rjson in resp_tables) for (ai in rjson) for (adj in ai$adjuntos) {
-      cat("ai=",ai$id," adj=", adj$id, "\n")
-      url <- httr::modify_url(
-        "https://api.cammesa.com/pub-svc/public/findAttachmentByNemoId",
-        query = list(nemo = ai$nemo, docId = ai$id, attachmentId = adj$id))
-      if(!dir.exists(file.path(folder, nemo)))
-        dir.create(file.path(folder, nemo))
-      path <- file.path(
-        folder, ai$nemo, #TODO: baja en el nemo obtenido, no consultado #$ nemo,
-        paste0(
-          ai$version |>
+  if (download.policy %in% c("missing.only", "overwrite")) {
+    for (i in seq_along(responses)) {
+      for (ai in httr::content(responses[[i]], simplifyVector = FALSE)) {
+        for (adj in ai$adjuntos) {
+          cat("ai=", ai$id, " adj=", adj$id, "\n")
+          url <- httr::modify_url(
+            "https://api.cammesa.com/",
+            path = "pub-svc/public/findAttachmentByNemoId",
+            query = list(nemo = ai$nemo, docId = ai$id, attachmentId = adj$id)
+          )
+          # usa nemo obtenido, no consultado (tabla$nemo[[i]])
+          if (tabla$nemo[[i]] != ai$nemo) {
+            tn <- paste(tabla$nemo[[i]], ai$nemo, sep = "->")
+            message("NOTA: Carpeta de destino ", tn)
+          }
+          if (!dir.exists(file.path(folder, ai$nemo))) {
+            dir.create(file.path(folder, ai$nemo))
+          }
+          # baja en el nemo obtenido, no consultado #$ nemo,
+          # tz = "America/Buenos_Aires",
+          fversion <- ai$version |>
             sub(pat = ":..$", repl = "00") |>
-            as.POSIXct(format = "%Y-%m-%dT%H:%M:%OS%z", tz="UTC") |>
-            # tz = "America/Buenos_Aires"),
-            format("%Y%m%dT%H%M", tz = tz),
-          "_", ai$id, "_", adj$id))
-      if(download.policy != "overwrite" && file.exists(path)) {
-        message(gettextf("Archivo existe, omitiendo: %s", path))}
-      else{
-        message(gettextf("bajar %s en %s", url, path))
-        httr::GET(
-          url,
-          httr::write_disk(path = path, overwrite = TRUE),
-          httr::progress(), config = get.config)
+            as.POSIXct(format = "%Y-%m-%dT%H:%M:%OS%z", tz = "UTC") |>
+            format("%Y%m%dT%H%M", tz = tz)
+          fname <- paste0(fversion, "_", ai$id, "_", adj$id)
+          path <- file.path(folder, ai$nemo, fname)
+          if (download.policy != "overwrite" && file.exists(path)) {
+            message(gettextf("Archivo existe, omitiendo: %s", path))
+          } else {
+            message(gettextf("bajar %s en %s", url, path))
+            httr::GET(
+              url,
+              config = get.config,
+              httr::write_disk(path = path, overwrite = TRUE),
+              httr::progress()
+            )
+          }
+        }
       }
     }
   }
