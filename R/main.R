@@ -87,8 +87,12 @@ try_get <- function(url, config = list(), ...) {
 
 #' @author author
 .onLoad <- function(libname, pkgname) {
+  backports::import(pkgname, "R_user_dir")
+  cache = tools::R_user_dir("apiCammesa", "cache")
+  data = tools::R_user_dir("apiCammesa", "data")
   options(
-    apiCammesa.download_folder = "~\\..\\OneDrive - Enel Spa\\cammesa\\downloads"
+    apiCammesa.download_folder = cache,
+    apiCammesa.download_database = file.path(data, "querydata.csv")
   )
 }
 
