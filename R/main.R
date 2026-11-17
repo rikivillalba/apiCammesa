@@ -49,12 +49,11 @@ splitYM <- function(x) {
 #' @export
 #'
 #' @examples
-catalogoPublicaciones <- function(vigentes = F) {
+catalogoPublicaciones <- function(vigentes = FALSE) {
   url <- if (isTRUE(vigentes))
     "https://api.cammesa.com/pub-svc/public/catalogoPublicacionesVigentes"
   else
     "https://api.cammesa.com/pub-svc/public/catalogoPublicaciones"
-
   message("Consultando ", url, "...")
   response <- try_get(url)
   httr::content(response, simplifyVector = T)
@@ -67,13 +66,15 @@ catalogoPublicaciones <- function(vigentes = F) {
 #'
 #' @examples
 api_docs <- function() {
-  httr::content(httr::GET("https://api.cammesa.com/pub-svc/v2/api-docs"),
-                simplifyVector = F)
+  httr::content(
+    httr::GET("https://api.cammesa.com/pub-svc/v2/api-docs"),
+    simplifyVector = F
+  )
 }
 
 try_get <- function(url, config = list(), ...) {
-  nmax <- 3
-  ntry <- 1
+  nmax <- 3L
+  ntry <- 1L
   repeat {
     tryCatch(
       curl_error = \(e) message(conditionMessage(e)),
@@ -81,7 +82,7 @@ try_get <- function(url, config = list(), ...) {
       return(httr::stop_for_status(httr::GET(url, config = config, ...)))
     )
     if (ntry == nmax) stop("Demasiados intentos fallidos")
-    ntry <- ntry + 1
+    ntry <- ntry + 1L
     message("intento número ", ntry, ":")
   }
 }
@@ -131,8 +132,8 @@ findDocumentosByNemo <- function(
   responses_from_backup = NULL
 ) {
   stopifnot(is.character(nemo))
-  stopifnot(is.atomic(fechadesde) && length(fechadesde) == 1)
-  stopifnot(is.atomic(fechahasta) && length(fechahasta) == 1)
+  stopifnot(is.atomic(fechadesde) && length(fechadesde) == 1L)
+  stopifnot(is.atomic(fechahasta) && length(fechahasta) == 1L)
   download.policy <- match.arg(download.policy)
 
   fd <- parseFecha(fechadesde, tz)
@@ -151,7 +152,7 @@ findDocumentosByNemo <- function(
     data.frame(nemo = nemo)
   )
 
-  stopifnot(nrow(tabla) > 0)
+  stopifnot(nrow(tabla) > 0L)
   endpoint <- "https://api.cammesa.com/pub-svc/public/findDocumentosByNemoRango"
 
   if (!is.null(responses_from_backup)) {
@@ -321,9 +322,9 @@ findAttachmentByNemoId <- function(
           format("%Y%m%dT%H%M", tz = "Etc/GMT+3") # tz = "America/Buenos_Aires"),
       }
     }
+  } else {
+    "00000000T0000"
   }
-
-  else "00000000T0000"
 
   #  dir.create(file.path(folder, nemo), showWarnings = F)
   #' TODO:
@@ -455,6 +456,7 @@ updateQueryDT <- function(x,
 ) {
   dt <- getQueryDT(file)
 
+  #TODO: sacar vctrs
   x <- vctrs::vec_cast(as.data.table(x), .query_dt_ptype)
   x[, comentario := fcoalesce(as.character(comentario), "")]
   x[, titulo := fcoalesce(as.character(titulo), "")]
@@ -473,14 +475,11 @@ updateQueryDT <- function(x,
       paste("\n - ", rs, collapse = ""))
     if (force) warning(msg) else stop(msg)
   }
-
   dt <- rbind(x.old, x.dup, x.new)
-
-  fwrite(dt, file = file)
-
+  data.table::fwrite(dt, file = file)
   message(
     gettextf("%d registro(s) nuevo(s) agregado a la base\n", nrow(x.dup)),
     gettextf("%d ya existía(n)\n",nrow(x.dup)),
-    gettextf("%d registro(s) en total", nrow(dt)))
-
+    gettextf("%d registro(s) en total", nrow(dt))
+  )
 }
