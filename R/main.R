@@ -1,6 +1,7 @@
 #API CAMMESA
 
 #' @import data.table
+#' @import backports
 NULL
 
 .query_dt_ptype <- data.table::data.table(
