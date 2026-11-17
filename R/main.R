@@ -3,6 +3,13 @@
 #' @import data.table
 NULL
 
+.query_dt_ptype <- data.table::data.table(
+  id = character(0), fecha = character(0), nemo = character(0),
+  titulo = character(0), comentario = character(0), hora = character(0),
+  adjuntos_id = character(0), adjuntos_campo = character(0),
+  adjuntos_nombre = character(0),
+  version = as.POSIXct(numeric(0), tzone = "Etc/GMT+3")
+)
 
 # Funciones auxiliares
 messagef <- function (fmt, ..., domain = NULL, appendLF = TRUE) {
@@ -27,34 +34,6 @@ splitYM <- function(x) {
   unname(split(x, with(as.POSIXlt(x), year * 12 + mon)))
 }
 
-findDocumentosByNemo_resp  <- function(responses) {
-  responses <- lapply(responses, httr::content, simplifyVector = T)
-  responses <- lapply(responses, function(tbl) {
-    if (!NROW(tbl)) return(NULL)
-    setDT(tbl)
-    #if (any(unlist(lapply(tbl$adjuntos, NROW))) == 0) {
-    # linea sin adjuntos. Crea una linea fake
-    stopifnot(is.list(tbl$adjuntos))
-    tbl[,adjuntos := fifelse(
-      unlist(lapply(adjuntos, NROW)) == 0,
-      list(data.table(
-        id = NA_character_, campo = NA_character_, nombre = NA_character_)),
-      adjuntos)]
-    #    }
-    tbl <- tbl[,by = .I, as.data.table(unlist(.SD, recursive = FALSE))]
-    tbl[, I := NULL]
-    #    tbl[comentario == "", comentario := NA]
-    #    tbl[titulo == "", titulo := NA]
-    tbl[,comentario := fcoalesce(as.character(comentario), "")]
-    tbl[,titulo := fcoalesce(as.character(titulo), "")]
-    tbl[, version := as.POSIXct(
-      sub(":..$","00", version), format = "%Y-%m-%dT%H:%M:%OS%z", tz = "UTC")]
-    setnames(tbl, sub("\\.", "_", names(tbl)))
-
-    tbl
-  })
-  responses
-}
 
 # ----- funciones públicas ----
 
@@ -76,7 +55,7 @@ catalogoPublicaciones <- function(vigentes = F) {
     "https://api.cammesa.com/pub-svc/public/catalogoPublicaciones"
 
   message("Consultando ", url, "...")
-  response <- httr::GET(url)
+  response <- try_get(url)
   httr::content(response, simplifyVector = T)
 }
 
@@ -91,6 +70,27 @@ api_docs <- function() {
                 simplifyVector = F)
 }
 
+try_get <- function(url, config = list(), ...) {
+  nmax <- 3
+  ntry <- 1
+  repeat {
+    tryCatch(
+      curl_error = \(e) message(conditionMessage(e)),
+      http_error = \(e) message(conditionMessage(e)),
+      return(httr::stop_for_status(httr::GET(url, config = config, ...)))
+    )
+    if (ntry == nmax) stop("Demasiados intentos fallidos")
+    ntry <- ntry + 1
+    message("intento número ", ntry, ":")
+  }
+}
+
+#' @author author
+.onLoad <- function(libname, pkgname) {
+  options(
+    apiCammesa.download_folder = "~\\..\\OneDrive - Enel Spa\\cammesa\\downloads"
+  )
+}
 
 #' Buscar y opcionalmente descargar documentos de CAMMESA por fecha y NEMO
 #'
@@ -99,6 +99,7 @@ api_docs <- function() {
 #' "2010-06-01T03:00:00.000Z" fueron probadas
 #' @param fechahasta fecha de consulta hasta
 #' @param folder ruta base de descarga (los archivos se descargan en una
+#' @param pattern
 #' @param download.policy no bajar, sobreescribir o bajar sólo faltantes
 #' @param queryByMonth divide la consulta en meses
 #' @param tz
@@ -115,102 +116,157 @@ api_docs <- function() {
 #' @examples
 findDocumentosByNemo <- function(
   nemo = "DTE_EMISION",
-  fechadesde = as.POSIXct(
-    trunc(Sys.time() - 30L * 86400L, "month"),
-    tz = tz
-  ),
-  fechahasta = Sys.time(),
+  fechadesde = as.POSIXct(trunc(Sys.time() - 30L * 86400L, "month"), tz = tz),
+  fechahasta = as.POSIXct(Sys.time(), tz = tz),
   tz = "America/Buenos_Aires",
-  folder = "~\\..\\OneDrive - Enel Spa\\cammesa\\downloads",
+  folder = getOption("apiCammesa.download_folder"),
+  pattern = ".*",
   download.policy = c("none", "missing.only", "overwrite"),
-  queryByMonth = FALSE, get.config = list()
+  queryByMonth = FALSE,
+  responses_from_backup = NULL
 ) {
   stopifnot(is.character(nemo))
   stopifnot(is.atomic(fechadesde) && length(fechadesde) == 1)
   stopifnot(is.atomic(fechahasta) && length(fechahasta) == 1)
   download.policy <- match.arg(download.policy)
 
+  fd <- parseFecha(fechadesde, tz)
+  fh <- parseFecha(fechahasta, tz)
   if (queryByMonth) {
-    fechas <- splitYM(seq.POSIXt(
-      parseFecha(fechadesde, tz), parseFecha(fechahasta, tz), "days"
-    ))
+    fechas <- splitYM(seq.POSIXt(fd, fh, "days"))
     fd <- as.POSIXct(vapply(fechas, head, 0, 1), "UTC")
     fh <- as.POSIXct(vapply(fechas, tail, 0, 1), "UTC")
-  } else {
-    fd <- parseFecha(fechadesde, tz)
-    fh <- parseFecha(fechahasta, tz)
   }
 
-  tabla <- expand.grid(
-    fechadesde = format(fd, format = "%Y-%m-%dT%H:%M:%OS3Z"),
-    fechahasta = format(fh, format = "%Y-%m-%dT%H:%M:%OS3Z"),
-    nemo = nemo
+  tabla <- merge(
+    data.frame(
+      fechadesde = format(fd, format = "%Y-%m-%dT%H:%M:%OS3Z"),
+      fechahasta = format(fh, format = "%Y-%m-%dT%H:%M:%OS3Z")
+    ),
+    data.frame(nemo = nemo)
   )
-  responses <- lapply(split(tabla, seq(NROW(tabla))), function(tbl) {
-    fd <- tbl$fechadesde
-    fh <- tbl$fechahasta
-    messagef("Consultando desde %s hasta %s", fd, fh)
-    url <- httr::modify_url(
-      "https://api.cammesa.com/",
-      path = "pub-svc/public/findDocumentosByNemoRango",
-      query = list(fechadesde = fd, fechahasta = fh, nemo = tbl$nemo)
-    )
-    message("request ", utils::URLdecode(url))
-    httr::stop_for_status(resp <- httr::GET(url))
-    resp
-  })
 
-  tmpfile <- tempfile("findDocumentosByNemo", fileext = "rds")
-  saveRDS(responses, tmpfile)
-  on.exit(message(gettextf("datos descargados guardados en %s", tmpfile)))
+  stopifnot(nrow(tabla) > 0)
+  endpoint <- "https://api.cammesa.com/pub-svc/public/findDocumentosByNemoRango"
 
-  if (download.policy %in% c("missing.only", "overwrite")) {
-    for (i in seq_along(responses)) {
-      for (ai in httr::content(responses[[i]], simplifyVector = FALSE)) {
-        for (adj in ai$adjuntos) {
-          cat("ai=", ai$id, " adj=", adj$id, "\n")
-          url <- httr::modify_url(
-            "https://api.cammesa.com/",
-            path = "pub-svc/public/findAttachmentByNemoId",
-            query = list(nemo = ai$nemo, docId = ai$id, attachmentId = adj$id)
-          )
-          # usa nemo obtenido, no consultado (tabla$nemo[[i]])
-          if (tabla$nemo[[i]] != ai$nemo) {
-            tn <- paste(tabla$nemo[[i]], ai$nemo, sep = "->")
-            message("NOTA: Carpeta de destino ", tn)
-          }
-          if (!dir.exists(file.path(folder, ai$nemo))) {
-            dir.create(file.path(folder, ai$nemo))
-          }
-          # baja en el nemo obtenido, no consultado #$ nemo,
-          # tz = "America/Buenos_Aires",
-          fversion <- ai$version |>
-            sub(pat = ":..$", repl = "00") |>
-            as.POSIXct(format = "%Y-%m-%dT%H:%M:%OS%z", tz = "UTC") |>
-            format("%Y%m%dT%H%M", tz = tz)
-          fname <- paste0(fversion, "_", ai$id, "_", adj$id)
-          path <- file.path(folder, ai$nemo, fname)
-          if (download.policy != "overwrite" && file.exists(path)) {
-            message(gettextf("Archivo existe, omitiendo: %s", path))
-          } else {
-            message(gettextf("bajar %s en %s", url, path))
-            httr::GET(
-              url,
-              config = get.config,
-              httr::write_disk(path = path, overwrite = TRUE),
-              httr::progress()
-            )
-          }
+  if (!is.null(responses_from_backup)) {
+    responses <- responses_from_backup
+  } else {
+    responses <- lapply(1:nrow(tabla), function(i) {
+      fd <- tabla[i, "fechadesde"]
+      fh <- tabla[i, "fechahasta"]
+      messagef("Consultando desde %s hasta %s", fd, fh)
+      query = list(fechadesde = fd, fechahasta = fh, nemo = tabla[i, "nemo"])
+      url <- httr::modify_url(endpoint, query = query)
+      message("request ", utils::URLdecode(url))
+      try_get(url)
+    })
+    tmpfile <- tempfile("findDocumentosByNemo", fileext = "rds")
+    saveRDS(responses, tmpfile)
+    on.exit(message(gettextf("datos descargados guardados en %s", tmpfile)))
+  }
+
+  content <- responses |>
+    lapply(httr::content, type = "application/json", simplifyVector = FALSE)
+  stopifnot(length(content) == nrow(tabla))
+
+  ok <- !vapply(content, hasName, logical(1), "status")
+  for(i in content[!ok]) {
+    message(gettextf("AVISO: %s (%s)\n", i$message, i$error_code))
+    next
+  }
+
+  content <- Map(
+    \(ctnt, cols) lapply(ctnt, replace, paste0("tbl_", names(cols)), cols),
+    ctnt = content[ok], cols = split(tabla, 1:nrow(tabla))[ok]
+  )
+
+  #  data <- findDocumentosByNemo_resp(content[valid])
+#  valid <- vapply(content, \(i) is.null(i$error_code), FALSE)
+#  data <- unlist(lapply(content[valid], make_doc_table), FALSE, FALSE)
+  if (length(content)) {
+    if (download.policy %in% c("missing.only", "overwrite")) {
+      download_content(
+        content, pattern, folder, tz, download.policy == "overwrite"
+      )
+    }
+    data <- make_doc_table(content) #   , pattern
+  } else {
+    warning("No se generó tabla de descargas")
+    data <- NULL
+  }
+  unlink(tmpfile)
+  on.exit(NULL)
+  if (!NROW(data)) {
+    warning(gettextf("No se devolvieron datos para la consulta"))
+  }
+  data
+}
+
+download_content <- function(content, pattern, folder, tz, overwrite) {
+  endpoint <- "https://api.cammesa.com/pub-svc/public/findAttachmentByNemoId"
+  download_error_handler <- function(e) {
+    messagef("AVISO: No se pudo descargar: %s", conditionMessage(e))
+  }
+  for (ctnt in content) {
+    for (ai in ctnt) {
+      for (adj in ai$adjuntos) {
+        if (!grepl(pattern, adj$id)) next
+        cat("ai=", ai$id, " adj=", adj$id, "\n")
+        if (ai$tbl_nemo != ai$nemo) {
+          # usa nemo obtenido, no consultado
+          tn <- paste(ai$tbl_nemo, ai$nemo, sep = "->")
+          message("NOTA: Carpeta de destino ", tn)
         }
+        dir.create(file.path(folder, ai$nemo), showWarnings = FALSE)
+        ai$version <- sub(":..$", "00", ai$version)  # 03:00 -> 0300
+        ver <- as.POSIXct(ai$version, "%Y-%m-%dT%H:%M:%OS%z", tz = "UTC")
+        fversion <- format(ver, "%Y%m%dT%H%M", tz = tz)
+        fname <- paste0(fversion, "_", ai$id, "_", adj$id)
+        path <- file.path(folder, ai$nemo, fname)
+        if (!overwrite && file.exists(path)) {
+          messagef("Archivo existe, omitiendo: %s", path)
+          next
+        }
+        query <- list(nemo = ai$nemo, docId = ai$id, attachmentId = adj$id)
+        url <- httr::modify_url(endpoint, query = query)
+        message(gettextf("bajar %s en %s", url, path))
+        tryCatch(error = download_error_handler, try_get(
+          url, httr::progress(), httr::write_disk(path, overwrite = TRUE)
+        ))
       }
     }
   }
+  invisible()
+}
 
-  data <- findDocumentosByNemo_resp(responses)
-  unlink(tmpfile)
-  on.exit(NULL)
-  if (!NROW(data)) warning(gettextf("No se devolvieron datos para la consulta"))
-  rbindlist(data)
+make_doc_table <- function(content) {
+#  data <- unlist(lapply(content[valid], make_doc_table), FALSE, FALSE)
+  adj_default <- list(
+    id = NA_character_,
+    campo = NA_character_,
+    nombre = NA_character_
+  )
+  make_rows <- function (i) {
+    if (!length(i[["adjuntos"]])) i[["adjuntos"]] <- list(adj_default)
+    lapply(i[["adjuntos"]], function(adj) {
+      names(adj) <- paste("adjuntos", names(adj), sep = "_")
+      k <- append(i, adj, after = match("adjuntos", names(i)))
+      k[names(k) != "adjuntos"]
+    })
+  }
+  content <- content |>
+    unlist(recursive = FALSE) |>
+    Filter(f = \(i) !hasName(i, "error_code")) |>
+    lapply(make_rows) |>
+    unlist(recursive = FALSE) |>
+    rbindlist()
+  content[, comentario := fcoalesce(as.character(comentario), "")]
+  content[, titulo := fcoalesce(as.character(titulo), "")]
+  content[, grep("^tbl_", names(.SD), value = TRUE) := NULL]
+  content[, version := as.POSIXct(
+    sub(":..$","00", version), format = "%Y-%m-%dT%H:%M:%OS%z", tz = "UTC")]
+  content[]
 }
 
 #' Descarga adjuntos por nemo y docId
@@ -352,8 +408,11 @@ NULL
 #' @examples
 getQueryDT <- function(
     file = "~/../OneDrive - Enel Spa/cammesa/Downloads/query.csv") {
-  dt <- fread(file = file)
-  dt[, setattr(version, "tzone", "Etc/GMT+3")]
+
+  # OJO con na.strings, por defecto los adjuntos_id vacíos son NA en el request
+  # fwrite lo guarda como <,,> por lo que na.strings = "" evita duplicados.
+  dt <- vctrs::vec_cast(fread(file, na.strings = ""), .query_dt_ptype)
+  #dt[, setattr(version, "tzone", "Etc/GMT+3")]
   dt[, comentario := fcoalesce(as.character(comentario), "")]
   dt[, titulo := fcoalesce(as.character(titulo), "")]
 
@@ -392,16 +451,15 @@ updateQueryDT <- function(x,
 
   dt <- getQueryDT(file)
 
-  x <- as.data.table(x)[,.SD, .SDcols = names(dt)]
+  x <- vctrs::vec_cast(as.data.table(x), .query_dt_ptype)
   x[, comentario := fcoalesce(as.character(comentario), "")]
   x[, titulo := fcoalesce(as.character(titulo), "")]
-  x[, version := as.POSIXct(version, tz = "Etc/GMT+3")]
-
+  #x[, version := as.POSIXct(version, tz = "Etc/GMT+3")]
   stopifnot(!anyDuplicated(x[, .(id, adjuntos_id)]))
   stopifnot(all.equal(names(x), names(dt)))
 
-  x.dup  <- x[dt, on = c("id", "adjuntos_id"), .SD, nomatch = NULL]
-  x.new  <- x[!dt, on = c("id", "adjuntos_id"), .SD]
+  x.dup <- x[dt, on = c("id", "adjuntos_id"), .SD, nomatch = NULL]
+  x.new <- x[!dt, on = c("id", "adjuntos_id"), .SD]
   x.old <- dt[!x, on = c("id", "adjuntos_id"), .SD]
 
   if (!isTRUE(rs <- all.equal(
