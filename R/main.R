@@ -246,7 +246,6 @@ download_content <- function(content, pattern, folder, tz, overwrite) {
 }
 
 make_doc_table <- function(content) {
-#  data <- unlist(lapply(content[valid], make_doc_table), FALSE, FALSE)
   adj_default <- list(
     id = NA_character_,
     campo = NA_character_,
@@ -290,7 +289,7 @@ make_doc_table <- function(content) {
 #' @examples
 findAttachmentByNemoId <- function(
     nemo, docId, attachmentId, version = NULL,
-    folder = "~\\..\\OneDrive - Enel Spa\\cammesa\\downloads",
+    folder = getOption("apiCammesa.download_folder"),
     file_pattern = function(version, docId, attachmentId) {
       paste0(version, "_", docId, "_", attachmentId)},
     overwrite = T)
@@ -412,8 +411,8 @@ NULL
 #'
 #' @examples
 getQueryDT <- function(
-    file = "~/../OneDrive - Enel Spa/cammesa/Downloads/query.csv") {
-
+    file = getOption("apiCammesa.download_database")
+) {
   # OJO con na.strings, por defecto los adjuntos_id vacíos son NA en el request
   # fwrite lo guarda como <,,> por lo que na.strings = "" evita duplicados.
   dt <- vctrs::vec_cast(fread(file, na.strings = ""), .query_dt_ptype)
@@ -442,18 +441,18 @@ getQueryDT <- function(
 #' @export
 #'
 #' @examples
+#'
+# Consideraciones:
+#  - las consultas con partes unificados (PARTE_SEMANAL_UNIF) no tienen
+#  la misma "fecha" que las de los no unificados (ej PARTE_SEMANAL)
+#  pasa lo mismo con la "hora" de PARTE_SEMANAL_COMP
+#  Los ID's coinciden. No tengo idea si los archivos son idénticos.
+#  - para datos viejos la query PARTE_SEMANAL_UNIF trae menos datos
+#  que las de PARTE_SEMANAL individuales
 updateQueryDT <- function(x,
-    file = "~/../OneDrive - Enel Spa/cammesa/Downloads/query.csv",
-    force = FALSE) {
-
-  #' Consideraciones:
-  #'  - las consultas con partes unificados (PARTE_SEMANAL_UNIF) no tienen
-  #'  la misma "fecha" que las de los no unificados (ej PARTE_SEMANAL)
-  #'  pasa lo mismo con la "hora" de PARTE_SEMANAL_COMP
-  #'  Los ID's coinciden. No tengo idea si los archivos son idénticos.
-  #'  - para datos viejos la query PARTE_SEMANAL_UNIF trae menos datos
-  #'  que las de PARTE_SEMANAL individuales
-
+  file = getOption("apiCammesa.download_database"),
+  force = FALSE
+) {
   dt <- getQueryDT(file)
 
   x <- vctrs::vec_cast(as.data.table(x), .query_dt_ptype)
